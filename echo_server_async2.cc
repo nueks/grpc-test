@@ -24,6 +24,102 @@ using echo::EchoRequest;
 using echo::EchoResponse;
 using echo::Echo;
 
+class ThreadPool
+{
+private:
+	struct JobInfo
+	{
+		std::function<void(bool)>* fn;
+	};
+
+	bool exit_{false};
+	std::deque< std::function<void(bool)>* > queue_;
+	std::condition_variable cond_;
+	mutable std::mutex mutex_;
+	std::vector<std::thread> threads_;
+
+	ThreadPool(const ThreadPool&) = delete;
+	ThreadPool& operator=(const ThreadPool&) = delete;
+	ThreadPool() = default;
+
+public:
+	static ThreadPool& instance()
+	{
+		static ThreadPool instance;
+		return instance;
+	}
+
+	~ThreadPool() noexcept
+	{
+		std::cout << "dtor ThreadPool" << std::endl;
+		threads_.clear();
+		queue_.clear();
+	}
+
+	void init(size_t num_thread)
+	{
+		for (auto i = 0; i < num_thread; ++i)
+		{
+			threads_.emplace_back(&ThreadPool::main, this);
+		}
+	}
+
+	void stop()
+	{
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			exit_ = true;
+		}
+		cond_.notify_all();
+		std::for_each(begin(threads_), end(threads_), [](std::thread& t){ t.join(); });
+
+		for (auto job : queue_)
+		{
+			std::cout << "job finalize" << std::endl;
+			(*job)(false);
+		}
+	}
+
+	void push(std::function<void(bool)>* h)
+	{
+		if (exit_)
+		{
+			std::cout << "push to finalized worker" << std::endl;
+			(*h)(false);
+			return;
+		}
+
+		{
+			std::lock_guard<std::mutex> lock(mutex_);
+			queue_.emplace_back(h);
+		}
+		cond_.notify_one();
+	}
+
+private:
+	void main()
+	{
+		std::cout << "worker started" << std::endl;
+		while (true)
+		{
+			//JobInfo info;
+			std::function<void(bool)>* job;
+			{
+				std::unique_lock<std::mutex> lock(mutex_);
+				cond_.wait(lock, [this]{ return exit_ || !queue_.empty(); });
+
+				if (exit_)
+					break;
+
+				job = std::move(queue_.front());
+				queue_.pop_front();
+			}
+			(*job)(true);
+		}
+		std::cout << "worker end" << std::endl;
+	}
+};
+
 
 template <typename ServiceType, typename RequestType, typename ResponseType, typename ImplType>
 struct ServerRpc
@@ -40,6 +136,8 @@ protected:
 	std::function<void(bool)> on_read_;
 	std::function<void(bool)> on_finish_;
 
+	std::function<void(bool)> job_;
+
 	using InitHandler=std::function<void(ServiceType*,
 										 ServerContext*,
 										 RequestType*,
@@ -54,6 +152,17 @@ public:
 	{
 		on_read_ = [this](bool ok) mutable { this->onRead(ok); };
 		on_finish_ = [this](bool ok) mutable { this->onFinish(ok); };
+		job_ = [this](bool ok){
+			if (!ok)
+			{
+				delete static_cast<ImplType*>(this);
+			}
+			else
+			{
+				static_cast<ImplType&>(*this).process();
+				responder_.Finish(response_, Status::OK, &on_finish_);
+			}
+		};
 	}
 
 protected:
@@ -73,9 +182,7 @@ private:
 		}
 
 		static_cast<ImplType&>(*this).clone();
-		static_cast<ImplType&>(*this).process();
-
-		responder_.Finish(response_, Status::OK, &on_finish_);
+		ThreadPool::instance().push(&job_);
 	}
 
 	void onFinish(bool ok)
@@ -93,9 +200,6 @@ private:
 	std::string tag_;
 
 public:
-	// inheriting constructors
-	// using ServerRpc::ServerRpc;
-
 	EchoRpc(Echo::AsyncService* service, ServerCompletionQueue* q, std::string tag)
 		: ServerRpc(service, q),
 		  tag_(std::move(tag))
@@ -106,6 +210,7 @@ public:
 	void process()
 	{
 		response_.set_message(request_.message() + tag_);
+		//usleep(3000);
 	}
 
 	EchoRpc* clone()
@@ -114,100 +219,6 @@ public:
 	}
 };
 
-
-class ThreadPool
-{
-public:
-	struct JobInfo
-	{
-		std::function<void(bool)>* fn;
-		bool ok;
-	};
-
-private:
-	bool exit_{false};
-	std::deque<JobInfo> queue_;
-	std::condition_variable cond_;
-	mutable std::mutex mutex_;
-	std::vector<std::thread> threads_;
-
-public:
-	ThreadPool(const ThreadPool&) = delete;
-	ThreadPool& operator=(const ThreadPool&) = delete;
-
-	ThreadPool(size_t num_thread)
-	{
-		for (auto i = 0; i < num_thread; ++i)
-		{
-			threads_.emplace_back(&ThreadPool::main, this);
-		}
-	}
-
-	~ThreadPool() noexcept
-	{
-		std::cout << "dtor ThreadPool" << std::endl;
-		threads_.clear();
-		queue_.clear();
-	}
-
-	void stop()
-	{
-		{
-			std::lock_guard<std::mutex> lock(mutex_);
-			exit_ = true;
-		}
-		cond_.notify_all();
-		std::for_each(begin(threads_), end(threads_), [](std::thread& t){ t.join(); });
-
-		for (auto job : queue_)
-		{
-			std::cout << "job finalize" << std::endl;
-			(*job.fn)(false);
-		}
-	}
-
-	void push(std::function<void(bool)>* h, bool ok)
-	{
-		if (exit_)
-		{
-			std::cout << "push to finalized worker: ok=" << ok << std::endl;
-			(*h)(false);
-			return;
-		}
-
-		JobInfo info;
-		info.fn = h;
-		info.ok = ok;
-		{
-			std::lock_guard<std::mutex> lock(mutex_);
-			queue_.push_back(std::move(info));
-		}
-		cond_.notify_one();
-	}
-
-private:
-	void main()
-	{
-		std::cout << "worker started" << std::endl;
-
-		while (true)
-		{
-			JobInfo info;
-			{
-				std::unique_lock<std::mutex> lock(mutex_);
-				cond_.wait(lock, [this]{ return exit_ || !queue_.empty(); });
-
-				if (exit_)
-					break;
-
-				info = std::move(queue_.front());
-				queue_.pop_front();
-			}
-			(*info.fn)(info.ok);
-		}
-		std::cout << "worker end" << std::endl;
-	}
-};
 
 
 class ServerImpl final
@@ -218,13 +229,11 @@ private:
 	std::unique_ptr<Server> server_;
 
 	std::vector<std::thread> threads_;
-	ThreadPool worker_{2};
 
 public:
 	~ServerImpl()
 	{
 		std::cout << "dtor of ServerImpl" << std::endl;
-		worker_.stop();
 
 		server_->Shutdown();
 		cq_->Shutdown();
@@ -268,8 +277,7 @@ public:
 			auto ret = cq_->Next((void**)&tag, &ok);
 			if (ret == CompletionQueue::NextStatus::GOT_EVENT)
 			{
-				//if (ok)
-				worker_.push(tag, ok);
+				(*tag)(ok);
 			}
 			else if (ret == CompletionQueue::NextStatus::SHUTDOWN)
 			{
@@ -279,13 +287,13 @@ public:
 		}
 
 		std::cout << "end of HandleRpcs" << std::endl;
-
 	}
 };
 
 
 int main(int argc, char** argv)
 {
+	ThreadPool::instance().init(4);
 	ServerImpl server;
 	server.run();
 
@@ -300,6 +308,7 @@ int main(int argc, char** argv)
 	sigwait(&set, &signum);
 
 	std::cout << "stop server" << std::endl;
+	ThreadPool::instance().stop();
 
 	return 0;
 }
