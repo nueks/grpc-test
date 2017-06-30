@@ -57,7 +57,7 @@ private:
 	std::atomic_bool exit_{false};
 	std::vector<std::thread> threads_;
 
-	std::string message_{"test message blablabla"};
+	std::string message_{"test message"};
 
 	//std::shared_ptr<Channel> channel_;
 
@@ -68,7 +68,7 @@ public:
 	Bnch()
 	//	: channel_(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()))
 	{
-		for (auto i = 0; i < 16; ++i)
+		for (auto i = 0; i < 1; ++i)
 		{
 			threads_.emplace_back(&Bnch::main, this);
 		}
@@ -100,13 +100,14 @@ public:
 	try
 	{
 		EchoClient client(
-			grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials())
+			grpc::CreateChannel("localhost:50050", grpc::InsecureChannelCredentials())
 		);
 		//EchoClient client(channel_);
 
 		while (!exit_)
 		{
 			client.echo(message_);
+			//usleep(990000);
 			result_++;
 		}
 	}

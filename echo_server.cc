@@ -3,6 +3,7 @@
 #include <string>
 
 #include <grpc++/grpc++.h>
+#include <grpc/support/log.h>
 #include "echo.grpc.pb.h"
 
 using grpc::Server;
@@ -18,6 +19,8 @@ using echo::Echo;
 class EchoService final : public Echo::Service {
 	Status Process(ServerContext* context, const EchoRequest* request, EchoResponse* response) override
 	{
+		//std::cout << "recv: " << request->message() << std::endl;
+		//gpr_log(GPR_DEBUG, "recv: %s", request->message().c_str());
 		response->set_message(request->message());
 		return Status::OK;
 	}
@@ -33,13 +36,15 @@ void runServer()
 	builder.RegisterService(&service);
 
 	std::unique_ptr<Server> server(builder.BuildAndStart());
-	std::cout << "Server listening on " << server_address << std::endl;
+	gpr_log(GPR_INFO, "Server listening on %s", server_address.c_str());
+	//std::cout << "Server listening on " << server_address << std::endl;
 
 	server->Wait();
 }
 
 int main(int argc, char** argv)
 {
+	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 	runServer();
 	return 0;
 }
