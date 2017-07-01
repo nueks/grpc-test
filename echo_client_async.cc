@@ -56,6 +56,10 @@ public:
 		//CompletionQueue cq;
 		Status status;
 
+		using namespace std::chrono;
+		system_clock::time_point deadline = system_clock::now() + milliseconds(3000);
+		context.set_deadline(deadline);
+
 		std::unique_ptr<ClientAsyncResponseReader<EchoResponse> > rpc(
 			stub_->AsyncProcess(&context, request, &cq)
 		);
@@ -83,6 +87,9 @@ public:
 		request.set_message(message);
 
 		AsyncClientCall* call = new AsyncClientCall;
+		using namespace std::chrono;
+		system_clock::time_point deadline = system_clock::now() + milliseconds(3000);
+		call->context.set_deadline(deadline);
 		call->response_reader = stub_->AsyncProcess(&call->context, request, &cq_);
 		call->response_reader->Finish(&call->response, &call->status, (void*)call);
 	}
@@ -124,11 +131,11 @@ public:
 	Bnch& operator=(const Bnch&) = delete;
 
 	Bnch()
-		: client_(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()))
+		: client_(grpc::CreateChannel("localhost:50050", grpc::InsecureChannelCredentials()))
 		  //io_(&EchoClient::AsyncCompleteRpc, &client_)
 	{
 		std::cout << "1" << std::endl;
-		for (auto i = 0; i < 100; ++i)
+		for (auto i = 0; i < 16; ++i)
 		{
 			threads_.emplace_back(&Bnch::main, this);
 		}

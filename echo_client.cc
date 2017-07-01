@@ -3,6 +3,7 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <chrono>
 #include <unistd.h>
 
 #include <sys/timerfd.h>
@@ -10,6 +11,7 @@
 #include <sys/types.h>
 
 #include <grpc++/grpc++.h>
+#include <grpc/support/log.h>
 #include "echo.grpc.pb.h"
 
 using grpc::Channel;
@@ -37,7 +39,10 @@ public:
 
 		EchoResponse response;
 
+		using namespace std::chrono;
+		system_clock::time_point deadline = system_clock::now() + milliseconds(3000);
 		ClientContext context;
+		context.set_deadline(deadline);
 		Status status  = stub_->Process(&context, request, &response);
 
 		if (status.ok())
@@ -68,7 +73,7 @@ public:
 	Bnch()
 	//	: channel_(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()))
 	{
-		for (auto i = 0; i < 1; ++i)
+		for (auto i = 0; i < 32; ++i)
 		{
 			threads_.emplace_back(&Bnch::main, this);
 		}
@@ -123,6 +128,7 @@ public:
 int main(int argc, char** argv)
 try
 {
+	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 	Bnch bnch;
 
 	auto periodic = [](long sec) {

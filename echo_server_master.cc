@@ -127,7 +127,7 @@ private:
 */
 
 template <typename ServiceType, typename RequestType, typename ResponseType, typename ImplType>
-struct ServerRpc : public std::enable_shared_from_this<ServerRpc<ServiceType, RequestType, ResponseType, ImplType> >
+struct ServerRpc// : public std::enable_shared_from_this<ServerRpc<ServiceType, RequestType, ResponseType, ImplType> >
 {
 protected:
 	ServiceType* service_;
@@ -155,6 +155,10 @@ public:
 	ServerRpc(ServiceType* service, ServerCompletionQueue* cq)
 		: service_(service), cq_(cq), responder_(&ctx_)
 	{
+		//on_read_ = [this](bool ok) mutable { this->onRead(ok); };
+		//on_finish_ = [this](bool ok) mutable { this->onFinish(ok); };
+
+
 		// job_ = [this](bool ok){
 		// 	if (!ok)
 		// 	{
@@ -163,20 +167,22 @@ public:
 		// 	else
 		// 	{
 		// 		static_cast<ImplType&>(*this).process();
-		// 		//responder_.Finish(response_, Status::OK, &on_finish_);
+		// 		responder_.Finish(response_, Status::OK, &on_finish_);
 		// 	}
 		// };
 	}
 
 	~ServerRpc()
 	{
-		std::cout << "dtor of ServerRpc" << std::endl;
+		//std::cout << "dtor of ServerRpc" << std::endl;
 	}
-
 	void init(const InitHandler& handler)
 	{
-		on_read_ = [self = this->shared_from_this()](bool ok) mutable { self->onRead(ok); };
-		on_finish_ = [self = this->shared_from_this()](bool ok) mutable { self->onFinish(ok); };
+		on_read_ = [this](bool ok) mutable { this->onRead(ok); };
+		on_finish_ = [this](bool ok) mutable { this->onFinish(ok); };
+
+		//on_read_ = [self = this->shared_from_this()](bool ok) mutable { self->onRead(ok); };
+		//on_finish_ = [self = this->shared_from_this()](bool ok) mutable { self->onFinish(ok); };
 
 		handler(service_, &ctx_, &request_, &responder_, cq_, cq_, &on_read_);
 	}
@@ -198,10 +204,10 @@ private:
 
 	void onFinish(bool ok)
 	{
-		std::cout << this->shared_from_this().use_count() << std::endl;
+		//std::cout << this->shared_from_this().use_count() << std::endl;
 		//if (!ok)
 		//	std::cout << "===================" << std::endl;
-		//delete static_cast<ImplType*>(this);
+		delete static_cast<ImplType*>(this);
 	}
 };
 
@@ -240,6 +246,7 @@ struct EchoRpc : public ServerRpc<Echo::AsyncService, EchoRequest, EchoResponse,
 private:
 	std::string tag_;
 	CompletionQueue* ccq_;
+	std::mutex mutex_;
 
 	int num_{0};
 
@@ -261,29 +268,30 @@ public:
 		  tag_(std::move(tag)),
 		  ccq_(cq)
 	{
-		//init(&Echo::AsyncService::RequestProcess);
+		init(&Echo::AsyncService::RequestProcess);
 		//context_.set_compression_algorithm(GRPC_COMPRESS_GZIP);
 		//fn_ = [this](bool ok){ callback(ok); };
 	}
 
 	~EchoRpc()
 	{
-		std::cout << "dtor echo rpc" << std::endl;
+		//std::cout << "dtor echo rpc" << std::endl;
 	}
 
 	void process()
 	{
-		gpr_log(GPR_DEBUG, "process");
+		//gpr_log(GPR_DEBUG, "process");
 
 		using namespace std::chrono;
 
 		system_clock::time_point deadline = system_clock::now() + milliseconds(1000);
 		//context_.set_deadline(deadline);
-		auto stub = Pool::instance().stub();
 
+		std::lock_guard<std::mutex> lock(mutex_);
+		auto stub = Pool::instance().stub();
 		for (auto i = 0; i < 2; ++i)
 		{
-			gpr_log(GPR_DEBUG, "send to slave: %d", i);
+			//gpr_log(GPR_DEBUG, "send to slave: %d", i);
 
 			auto call = std::make_unique<ClientCall>();
 
@@ -298,14 +306,15 @@ public:
 		}
 	}
 
-	//EchoRpc* clone()
-	std::shared_ptr<EchoRpc> clone()
+	EchoRpc* clone()
+	//std::shared_ptr<EchoRpc> clone()
 	{
 		//return new EchoRpc(service_, cq_, ccq_, tag_);
 		//return std::make_shared<EchoRpc>(service_, cq_, ccq_, tag_);
 		//init(&Echo::AsyncService::RequestProcess);
-		auto rpc = std::make_shared<EchoRpc>(service_, cq_, ccq_, tag_);
-		rpc->init(&Echo::AsyncService::RequestProcess);
+		//auto rpc = std::make_shared<EchoRpc>(service_, cq_, ccq_, tag_);
+		auto rpc = new EchoRpc(service_, cq_, ccq_, tag_);
+		//rpc->init(&Echo::AsyncService::RequestProcess);
 		return rpc;
 
 	}
@@ -316,7 +325,8 @@ public:
 		// 등록한 이벤트를 모두 받은 다음에만 삭제 할 수 있다.
 
 		// 한 쓰레드가 callback 처리중인데, 다른 쓰레드가 먼저 callback 을 처리하고 delete 까지 한다면?
-
+		{
+		std::lock_guard<std::mutex> lock(mutex_);
 		if (!ok)
 		{
 			// .......
@@ -332,8 +342,12 @@ public:
 
 		num_++;
 		//gpr_log(GPR_INFO, "callback with index:%d, num:%d", i, num_);
+		if (num_ != 2)
+			return;
+		}
 		if (num_ == 2)
 		{
+			//usleep(10000);
 			//gpr_log(GPR_DEBUG, "response to client");
 			response_.set_message(request_.message());
 			responder_.Finish(response_, Status::OK, &on_finish_);
@@ -385,12 +399,12 @@ public:
 
 		init();
 
-		for (auto i = 0; i < 4; ++i)
+		for (auto i = 0; i < 1; ++i)
 		{
 			threads_.emplace_back(&ServerImpl::HandleRpcs, this);
 		}
 
-		for (auto i = 0; i< 1; ++i)
+		for (auto i = 0; i< 8; ++i)
 		{
 			threads_.emplace_back(&ServerImpl::HandleClients, this);
 		}
@@ -398,9 +412,9 @@ public:
 
 	void init()
 	{
-		//new EchoRpc(&service_, cq_.get(), ccq_.get(), "test");
-		auto rpc = std::make_shared<EchoRpc>(&service_, cq_.get(), ccq_.get(), "test");
-		rpc->init(&Echo::AsyncService::RequestProcess);
+		auto rpc = new EchoRpc(&service_, cq_.get(), ccq_.get(), "test");
+		//auto rpc = std::make_shared<EchoRpc>(&service_, cq_.get(), ccq_.get(), "test");
+		//rpc->init(&Echo::AsyncService::RequestProcess);
 	}
 
 	void HandleRpcs()
@@ -414,6 +428,7 @@ public:
 			if (ret == CompletionQueue::NextStatus::GOT_EVENT)
 			{
 				(*tag)(ok);
+				//ThreadPool::instance().push(tag);
 			}
 			else if (ret == CompletionQueue::NextStatus::SHUTDOWN)
 			{
@@ -435,10 +450,10 @@ public:
 		while (true)
 		{
 			auto ret = ccq_->Next((void**)&tag, &ok);
-			gpr_log(GPR_DEBUG, "got client event. ret = %d", ret);
+			//gpr_log(GPR_DEBUG, "got client event. ret = %d", ret);
 			if (ret == CompletionQueue::NextStatus::GOT_EVENT)
 			{
-				gpr_log(GPR_DEBUG, "got client event with ok=%d", ok);
+				//gpr_log(GPR_DEBUG, "got client event with ok=%d", ok);
 				(*tag)(ok);
 				//ThreadPool::instance().push(tag);
 			}
@@ -457,9 +472,9 @@ public:
 
 int main(int argc, char** argv)
 {
-	gpr_set_log_verbosity(GPR_LOG_SEVERITY_INFO);
+	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 	Pool::instance().stub();
-	//}ThreadPool::instance().init(4);
+	//ThreadPool::instance().init(8);
 	ServerImpl server;
 	server.run();
 

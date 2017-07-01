@@ -209,6 +209,7 @@ public:
 
 	void process()
 	{
+		usleep(10000);
 		response_.set_message(request_.message() + tag_);
 		//usleep(3000);
 	}
@@ -245,7 +246,7 @@ public:
 
 	void run()
 	{
-		std::string server_address("0.0.0.0:50051");
+		std::string server_address("0.0.0.0:50050");
 
 		ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
@@ -293,7 +294,7 @@ public:
 
 int main(int argc, char** argv)
 {
-	ThreadPool::instance().init(4);
+	ThreadPool::instance().init(32);
 	ServerImpl server;
 	server.run();
 

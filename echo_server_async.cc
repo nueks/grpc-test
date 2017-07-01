@@ -103,6 +103,7 @@ public:
 
 	void process()
 	{
+		//usleep(10000);
 		response_.set_message(request_.message() + tag_);
 	}
 
