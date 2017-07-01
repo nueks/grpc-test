@@ -10,6 +10,7 @@
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
+#include <grpc/support/log.h>
 
 #include "echo.grpc.pb.h"
 
@@ -91,9 +92,6 @@ private:
 	std::string tag_;
 
 public:
-	// inheriting constructors
-	// using ServerRpc::ServerRpc;
-
 	EchoRpc(Echo::AsyncService* service, ServerCompletionQueue* q, std::string tag)
 		: ServerRpc(service, q),
 		  tag_(std::move(tag))
@@ -103,7 +101,7 @@ public:
 
 	void process()
 	{
-		//usleep(10000);
+		//usleep(1000);
 		response_.set_message(request_.message() + tag_);
 	}
 
@@ -113,101 +111,168 @@ public:
 	}
 };
 
+class SignalBlocker
+{
+private:
+	bool blocked_ = false;
+	sigset_t mask_;
+	sigset_t old_mask_;
+
+public:
+	SignalBlocker(SignalBlocker&) = delete;
+	SignalBlocker& operator=(SignalBlocker&) = delete;
+
+	SignalBlocker(std::initializer_list<int> sigs)
+	{
+		sigemptyset(&mask_);
+		for (auto sig : sigs)
+		{
+			sigaddset(&mask_, sig);
+		}
+
+		block();
+	}
+
+	~SignalBlocker()
+	{
+		unblock();
+	}
+
+	void block()
+	{
+		if (!blocked_)
+		{
+			blocked_ = (::pthread_sigmask(SIG_BLOCK, &mask_, &old_mask_) == 0);
+		}
+	}
+
+	void unblock()
+	{
+		if (blocked_)
+		{
+			blocked_ = (::pthread_sigmask(SIG_SETMASK, &old_mask_, 0) != 0);
+		}
+	}
+};
 
 class ServerImpl final
 {
 private:
 	Echo::AsyncService service_;
-	std::unique_ptr<ServerCompletionQueue> cq_;
 	std::unique_ptr<Server> server_;
+	std::vector <std::unique_ptr<ServerCompletionQueue> > cqs_;
 
 	std::vector<std::thread> threads_;
 
 public:
 	~ServerImpl()
 	{
-		std::cout << "dtor of ServerImpl" << std::endl;
+		gpr_log(GPR_INFO, "destructor of ServerImpl");
 
 		server_->Shutdown();
-		cq_->Shutdown();
-
-		std::for_each(begin(threads_), end(threads_), [](std::thread& t){ t.join(); });
+		std::for_each(
+			begin(cqs_), end(cqs_),
+			[](std::unique_ptr<ServerCompletionQueue>& cq){ cq->Shutdown(); }
+		);
+		std::for_each(
+			begin(threads_), end(threads_),
+			[](std::thread& t){ t.join(); }
+		);
 		threads_.clear();
 
-		std::cout << "end of dtor of ServerImpl" << std::endl;
+		gpr_log(GPR_INFO, "ServerImpl destructed");
 	}
 
 
 	void run()
 	{
+		int num_cq = 4;
 		std::string server_address("0.0.0.0:50051");
 
 		ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&service_);
-		cq_ = builder.AddCompletionQueue();
-		server_ = builder.BuildAndStart();
-		std::cout << "Server listening on: " << server_address << std::endl;
 
-		init();
-
-		for (auto i = 0; i < 1; ++i)
+		for (auto i = 0; i < num_cq; ++i)
 		{
-			threads_.emplace_back(&ServerImpl::HandleRpcs, this);
+			cqs_.push_back(builder.AddCompletionQueue());
+		}
+		server_ = builder.BuildAndStart();
+		gpr_log(GPR_INFO, "Server listening on: %s", server_address.c_str());
+
+		init(num_cq);
+
+		for (auto i = 0; i < num_cq; ++i)
+		{
+			threads_.emplace_back([this, i](){ this->HandleRpcs(i); });
+			threads_.emplace_back([this, i](){ this->HandleRpcs(i); });
 		}
 	}
 
-	void init()
+	void init(int index)
 	{
-		new EchoRpc(&service_, cq_.get(), "test");
+		for (auto i = 0; i < index; ++i)
+		{
+			new EchoRpc(&service_, cqs_[i].get(), "test");
+		}
 	}
 
-	void HandleRpcs()
+	void HandleRpcs(int index)
 	{
+		// 종료 signal을 worker thread가 받으면 안된다.
+		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
+
 		std::function<void(bool)>* tag;
 		bool ok;
 
+		gpr_log(GPR_INFO, "HandleRpcs (thread:%d)", index);
 		while (true)
 		{
-			auto ret = cq_->Next((void**)&tag, &ok);
+			auto ret = cqs_[index]->Next((void**)&tag, &ok);
 			if (ret == CompletionQueue::NextStatus::GOT_EVENT)
 			{
 				(*tag)(ok);
 			}
 			else if (ret == CompletionQueue::NextStatus::SHUTDOWN)
 			{
-				std::cout << "cq shutdown" << std::endl;
+				//gpr_log(GPR_INFO, "CompletionQueue shutdowned for thread:%d", index);
 				break;
 			}
 			else
 			{
-				std::cout << "??????????????" << std::endl;
+				gpr_log(GPR_ERROR, "Unknown event: %d", ret);
 			}
 		}
 
-		std::cout << "end of HandleRpcs" << std::endl;
+		gpr_log(GPR_INFO, "End of HandleRpcs (thread:%d)", index);
 	}
 };
 
 
 
-int main(int argc, char** argv)
+void wait(std::initializer_list<int> sigs)
 {
-	ServerImpl server;
-	server.run();
-
-	std::cout << "set signal" << std::endl;
 	sigset_t set;
 	int signum;
 	sigemptyset(&set);
-	sigaddset(&set, SIGQUIT);
-	sigaddset(&set, SIGTERM);
-	sigaddset(&set, SIGINT);
+	for (auto sig : sigs)
+	{
+		sigaddset(&set, sig);
+	}
 	pthread_sigmask(SIG_BLOCK, &set, NULL);
 	sigwait(&set, &signum);
+}
 
-	std::cout << "stop server" << std::endl;
 
-	//kill(getpid(), SIGTERM);
+int main(int argc, char** argv)
+{
+	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
+
+	ServerImpl server;
+	server.run();
+
+	gpr_log(GPR_INFO, "Server started");
+	wait({SIGQUIT, SIGTERM, SIGINT});
+	gpr_log(GPR_INFO, "stop Server");
 	return 0;
 }
