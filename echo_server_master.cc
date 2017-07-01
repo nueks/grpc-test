@@ -205,6 +205,51 @@ public:
 };
 
 
+class SignalBlocker
+{
+private:
+	bool blocked_ = false;
+	sigset_t mask_;
+	sigset_t old_mask_;
+
+public:
+	SignalBlocker(SignalBlocker&) = delete;
+	SignalBlocker& operator=(SignalBlocker&) = delete;
+
+	SignalBlocker(std::initializer_list<int> sigs)
+	{
+		sigemptyset(&mask_);
+		for (auto sig : sigs)
+		{
+			sigaddset(&mask_, sig);
+		}
+
+		block();
+	}
+
+	~SignalBlocker()
+	{
+		unblock();
+	}
+
+private:
+	void block()
+	{
+		if (!blocked_)
+		{
+			blocked_ = (::pthread_sigmask(SIG_BLOCK, &mask_, &old_mask_) == 0);
+		}
+	}
+
+	void unblock()
+	{
+		if (blocked_)
+		{
+			blocked_ = (::pthread_sigmask(SIG_SETMASK, &old_mask_, 0) != 0);
+		}
+	}
+};
+
 class ServerImpl final
 {
 private:
@@ -272,6 +317,8 @@ public:
 
 	void HandleRpcs()
 	{
+		// 종료 signal을 worker thread가 받으면 안된다.
+		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
 		std::function<void(bool)>* tag;
 		bool ok;
 
@@ -295,6 +342,8 @@ public:
 
 	void HandleClients()
 	{
+		// 종료 signal을 worker thread가 받으면 안된다.
+		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
 		std::function<void(bool)>* tag;
 		bool ok;
 
