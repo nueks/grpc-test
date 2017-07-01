@@ -24,14 +24,58 @@ using echo::EchoRequest;
 using echo::EchoResponse;
 using echo::Echo;
 
+
+class SignalBlocker
+{
+private:
+	bool blocked_ = false;
+	sigset_t mask_;
+	sigset_t old_mask_;
+
+public:
+	SignalBlocker(SignalBlocker&) = delete;
+	SignalBlocker& operator=(SignalBlocker&) = delete;
+
+	SignalBlocker(std::initializer_list<int> sigs)
+	{
+		sigemptyset(&mask_);
+		for (auto sig : sigs)
+		{
+			sigaddset(&mask_, sig);
+		}
+
+		block();
+	}
+
+	~SignalBlocker()
+	{
+		unblock();
+	}
+
+	void block()
+	{
+		if (!blocked_)
+		{
+			blocked_ = (::pthread_sigmask(SIG_BLOCK, &mask_, &old_mask_) == 0);
+		}
+	}
+
+	void unblock()
+	{
+		if (blocked_)
+		{
+			blocked_ = (::pthread_sigmask(SIG_SETMASK, &old_mask_, 0) != 0);
+		}
+	}
+};
+
+
+// CompletionQueue를 여러 thread가 polling 하는 것 보다
+// 한 thread가 polling 하고, 별도의 thread pool을 사용하는 방식이
+// 성능이 더 잘나온다.
 class ThreadPool
 {
 private:
-	struct JobInfo
-	{
-		std::function<void(bool)>* fn;
-	};
-
 	bool exit_{false};
 	std::deque< std::function<void(bool)>* > queue_;
 	std::condition_variable cond_;
@@ -51,7 +95,7 @@ public:
 
 	~ThreadPool() noexcept
 	{
-		std::cout << "dtor ThreadPool" << std::endl;
+		gpr_log(GPR_INFO, "destructor of ThreadPool");
 		threads_.clear();
 		queue_.clear();
 	}
@@ -60,12 +104,13 @@ public:
 	{
 		for (auto i = 0; i < num_thread; ++i)
 		{
-			threads_.emplace_back(&ThreadPool::main, this);
+			threads_.emplace_back([this, i](){ this->main(i); });
 		}
 	}
 
 	void stop()
 	{
+		gpr_log(GPR_INFO, "stop ThreadPool");
 		{
 			std::lock_guard<std::mutex> lock(mutex_);
 			exit_ = true;
@@ -75,7 +120,7 @@ public:
 
 		for (auto job : queue_)
 		{
-			std::cout << "job finalize" << std::endl;
+			gpr_log(GPR_INFO, "finalize unfinished job");
 			(*job)(false);
 		}
 	}
@@ -84,7 +129,7 @@ public:
 	{
 		if (exit_)
 		{
-			std::cout << "push to finalized worker" << std::endl;
+			gpr_log(GPR_INFO, "push to finalized ThreadPool");
 			(*h)(false);
 			return;
 		}
@@ -97,12 +142,14 @@ public:
 	}
 
 private:
-	void main()
+	void main(int index)
 	{
-		std::cout << "worker started" << std::endl;
+		// 종료 signal을 worker thread가 받으면 안된다.
+		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
+
+		gpr_log(GPR_INFO, "Worker started (num:%d)", index);
 		while (true)
 		{
-			//JobInfo info;
 			std::function<void(bool)>* job;
 			{
 				std::unique_lock<std::mutex> lock(mutex_);
@@ -116,9 +163,10 @@ private:
 			}
 			(*job)(true);
 		}
-		std::cout << "worker end" << std::endl;
+		gpr_log(GPR_INFO, "Worker end (num:%d)", index);
 	}
 };
+
 
 
 template <typename ServiceType, typename RequestType, typename ResponseType, typename ImplType>
@@ -176,13 +224,16 @@ private:
 	{
 		if (!ok)
 		{
-			std::cout << "---------------" << std::endl;
+			//std::cout << "---------------" << std::endl;
 			delete static_cast<ImplType*>(this);
 			return;
 		}
 
 		static_cast<ImplType&>(*this).clone();
+
 		ThreadPool::instance().push(&job_);
+		//static_cast<ImplType&>(*this).process();
+		//responder_.Finish(response_, Status::OK, &on_finish_);
 	}
 
 	void onFinish(bool ok)
@@ -209,7 +260,7 @@ public:
 
 	void process()
 	{
-		usleep(10000);
+		//usleep(1000);
 		response_.set_message(request_.message() + tag_);
 		//usleep(3000);
 	}
@@ -246,7 +297,7 @@ public:
 
 	void run()
 	{
-		std::string server_address("0.0.0.0:50050");
+		std::string server_address("0.0.0.0:50051");
 
 		ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
@@ -294,7 +345,9 @@ public:
 
 int main(int argc, char** argv)
 {
-	ThreadPool::instance().init(32);
+	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
+
+	ThreadPool::instance().init(16);
 	ServerImpl server;
 	server.run();
 
@@ -310,6 +363,7 @@ int main(int argc, char** argv)
 
 	std::cout << "stop server" << std::endl;
 	ThreadPool::instance().stop();
+
 
 	return 0;
 }

@@ -117,7 +117,7 @@ private:
 struct EchoRpc : public ServerRpc<Echo::AsyncService, EchoRequest, EchoResponse, EchoRpc>
 {
 private:
-	constexpr static int expected_{4}; 	// 하단 서버로 보낼 요청 갯수.
+	constexpr static int expected_{2}; 	// 하단 서버로 보낼 요청 갯수.
 
 	std::string tag_;
 	CompletionQueue* ccq_;
@@ -232,7 +232,6 @@ public:
 		unblock();
 	}
 
-private:
 	void block()
 	{
 		if (!blocked_)
@@ -304,7 +303,7 @@ public:
 		// I/O 작업만 수행하는 ServerCompletionQueue와 달리 thread 갯수를 늘릴 수 있다.
 		// 단, sort/merge 작업의 부하가 작으면 thread 갯수가 작을 수록 유리하다.
 		// 성능을 끌어내기 위해서는 CompletionQueue를 thread 당 하나씩 할당해야 한다.
-		for (auto i = 0; i< 2; ++i)
+		for (auto i = 0; i< 4; ++i)
 		{
 			threads_.emplace_back(&ServerImpl::HandleClients, this);
 		}
