@@ -14,6 +14,8 @@
 #include <grpc/support/log.h>
 #include "echo.grpc.pb.h"
 
+#include <gflags/gflags.h>
+
 using grpc::Channel;
 using grpc::ClientContext;
 using grpc::Status;
@@ -21,6 +23,9 @@ using grpc::Status;
 using echo::EchoRequest;
 using echo::EchoResponse;
 using echo::Echo;
+
+DEFINE_string(address, "localhost:50050", "target address to request");
+DEFINE_int32(workers, 32, "number of workers");
 
 class EchoClient
 {
@@ -40,7 +45,7 @@ public:
 		EchoResponse response;
 
 		using namespace std::chrono;
-		system_clock::time_point deadline = system_clock::now() + milliseconds(3000);
+		system_clock::time_point deadline = system_clock::now() + milliseconds(1000);
 		ClientContext context;
 		context.set_deadline(deadline);
 		Status status  = stub_->Process(&context, request, &response);
@@ -73,7 +78,7 @@ public:
 	Bnch()
 	//	: channel_(grpc::CreateChannel("localhost:50051", grpc::InsecureChannelCredentials()))
 	{
-		for (auto i = 0; i < 32; ++i)
+		for (auto i = 0; i < FLAGS_workers; ++i)
 		{
 			threads_.emplace_back(&Bnch::main, this);
 		}
@@ -105,14 +110,13 @@ public:
 	try
 	{
 		EchoClient client(
-			grpc::CreateChannel("localhost:50050", grpc::InsecureChannelCredentials())
+			grpc::CreateChannel(FLAGS_address, grpc::InsecureChannelCredentials())
 		);
 		//EchoClient client(channel_);
 
 		while (!exit_)
 		{
 			client.echo(message_);
-			//usleep(990000);
 			result_++;
 		}
 	}
@@ -125,9 +129,13 @@ public:
 
 };
 
+
 int main(int argc, char** argv)
 try
 {
+	gflags::SetUsageMessage("");
+	gflags::ParseCommandLineFlags(&argc, &argv, true);
+
 	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 	Bnch bnch;
 

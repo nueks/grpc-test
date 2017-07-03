@@ -11,8 +11,9 @@
 
 #include <grpc++/grpc++.h>
 #include <grpc/support/log.h>
-
 #include "echo.grpc.pb.h"
+
+#include <gflags/gflags.h>
 
 using grpc::Channel;
 using grpc::ClientAsyncResponseReader;
@@ -24,12 +25,17 @@ using echo::EchoRequest;
 using echo::EchoResponse;
 using echo::Echo;
 
+DEFINE_string(address, "localhost:50050", "target address to request");
+DEFINE_int32(workers, 32, "number of workers");
+
 class EchoClient
 {
 private:
 
 	std::unique_ptr<Echo::Stub> stub_;
 	CompletionQueue cq_;
+
+	std::unique_ptr<std::thread> io_;
 
 	struct AsyncClientCall
 	{
@@ -39,43 +45,57 @@ private:
 		std::unique_ptr< ClientAsyncResponseReader<EchoResponse> > response_reader;
 	};
 
+	std::atomic_size_t result_{0};
+
 public:
 	explicit EchoClient(std::shared_ptr<Channel> channel)
-		: stub_(Echo::NewStub(channel))
+		: stub_(Echo::NewStub(channel)),
+		  io_{std::make_unique<std::thread>(&EchoClient::AsyncCompleteRpc, this)}
 	{
+	}
+
+	~EchoClient()
+	{
+		io_->join();
+	}
+
+	size_t result() const
+	{
+		return result_.load();
 	}
 
 	std::string echo(const std::string& message, CompletionQueue& cq)
 	{
-		AsyncClientCall* call = new AsyncClientCall;
+		auto call = std::make_unique<AsyncClientCall>();
 		EchoRequest request;
 		request.set_message(message);
 
 		EchoResponse response;
 		ClientContext context;
-		//CompletionQueue cq;
 		Status status;
 
 		using namespace std::chrono;
-		system_clock::time_point deadline = system_clock::now() + milliseconds(3000);
+		system_clock::time_point deadline = system_clock::now() + milliseconds(1000);
 		context.set_deadline(deadline);
 
 		std::unique_ptr<ClientAsyncResponseReader<EchoResponse> > rpc(
 			stub_->AsyncProcess(&context, request, &cq)
 		);
-		rpc->Finish(&response, &status, (void*)call);
+		rpc->Finish(&response, &status, (void*)call.get());
 
 		void* got_tag;
 		bool ok = false;
 
 		GPR_ASSERT(cq.Next(&got_tag, &ok));
-		GPR_ASSERT(got_tag == (void*)call);
+		GPR_ASSERT(got_tag == (void*)call.get());
 		GPR_ASSERT(ok);
 
-		delete call;
-
+		result_++;
 		if (status.ok())
+		{
+			//result_++;
 			return response.message();
+		}
 		else
 			return "RPC failed";
 	}
@@ -88,7 +108,7 @@ public:
 
 		AsyncClientCall* call = new AsyncClientCall;
 		using namespace std::chrono;
-		system_clock::time_point deadline = system_clock::now() + milliseconds(3000);
+		system_clock::time_point deadline = system_clock::now() + milliseconds(1000);
 		call->context.set_deadline(deadline);
 		call->response_reader = stub_->AsyncProcess(&call->context, request, &cq_);
 		call->response_reader->Finish(&call->response, &call->status, (void*)call);
@@ -96,31 +116,28 @@ public:
 
 	void AsyncCompleteRpc()
 	{
+		std::cout << "AsyncCompleteRpc" << std::endl;
 		void* got_tag;
 		bool ok = false;
 
 		while (cq_.Next(&got_tag, &ok))
 		{
-
 			AsyncClientCall* call = static_cast<AsyncClientCall*>(got_tag);
 			GPR_ASSERT(ok);
 			if (!call->status.ok())
 				std::cout << "RPC failed" << std::endl;
 
+			result_++;
 			delete call;
 		}
 	}
-
-
 };
 
 class Bnch
 {
 private:
-	std::atomic_size_t result_{0};
 	std::atomic_bool exit_{false};
 	std::vector<std::thread> threads_;
-	//std::unique_ptr<std::thread> io_;
 
 	std::string message_{"test message blablabla"};
 
@@ -131,17 +148,12 @@ public:
 	Bnch& operator=(const Bnch&) = delete;
 
 	Bnch()
-		: client_(grpc::CreateChannel("localhost:50050", grpc::InsecureChannelCredentials()))
-		  //io_(&EchoClient::AsyncCompleteRpc, &client_)
+		: client_(grpc::CreateChannel(FLAGS_address, grpc::InsecureChannelCredentials()))
 	{
-		std::cout << "1" << std::endl;
-		for (auto i = 0; i < 16; ++i)
+		for (auto i = 0; i < FLAGS_workers; ++i)
 		{
 			threads_.emplace_back(&Bnch::main, this);
 		}
-		std::cout << "2" << std::endl;
-
-		//io_.reset(new std::thread(&EchoClient::AsyncCompleteRpc, &client_));
 	}
 
 	~Bnch()
@@ -154,12 +166,11 @@ public:
 		exit_ = true;
 		std::for_each(begin(threads_), end(threads_), [](std::thread& t){ t.join(); });
 		threads_.clear();
-		//io_->join();
 	}
 
 	size_t result() const
 	{
-		return result_.load();
+		return client_.result();
 	}
 
 	bool ok() const
@@ -173,9 +184,10 @@ public:
 		CompletionQueue cq;
 		while (!exit_)
 		{
-			//std::cout << "10" << std::endl;
 			client_.echo(message_, cq);
-			result_++;
+
+			//usleep(10000);
+			//client_.echo_async(message_);
 		}
 	}
 	catch (const std::exception& ex)
@@ -184,15 +196,17 @@ public:
 		exit_ = true;
 	}
 
-
 };
+
 
 int main(int argc, char** argv)
 try
 {
-	std::cout << "11" << std::endl;
+	gflags::SetUsageMessage("");
+	gflags::ParseCommandLineFlags(&argc, &argv, true);
+
+	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 	Bnch bnch;
-	std::cout << "22" << std::endl;
 
 	auto periodic = [](long sec) {
 		int timer = timerfd_create(CLOCK_MONOTONIC, 0);
@@ -211,22 +225,6 @@ try
 
 		return timer;
 	};
-
-	// EchoClient client(
-	// 	grpc::CreateChannel(
-	// 		"localhost:50051", grpc::InsecureChannelCredentials()
-	// 	)
-	// );
-
-	// std::thread thread_ = std::thread(&EchoClient::AsyncCompleteRpc, &client);
-
-	// for (int i = 0; i < 100; i++) {
-	// 	client.echo_async("test");
-	// }
-
-	// thread_.join();
-
-
 
 
 	auto timer = periodic(1);

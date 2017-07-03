@@ -3,6 +3,7 @@ project(grpc_echo)
 
 find_package(Protobuf REQUIRED)
 
+
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -g")
 
 include_directories(/usr/local/include)
@@ -41,7 +42,7 @@ set(GENERATED_PROTOBUF_FILES ${ECHO_PB_H_FILE} ${ECHO_PB_CPP_FILE}
     ${ECHO_GRPC_PB_H_FILE} ${ECHO_GRPC_PB_CPP_FILE})
 
 include_directories(${GENERATED_PROTOBUF_PATH})
-link_libraries(pthread grpc++_unsecure grpc gpr ${PROTOBUF_LIBRARY})
+link_libraries(pthread grpc++_unsecure grpc gpr ${PROTOBUF_LIBRARY} gflags)
 
 add_executable(echo_server echo_server.cc ${GENERATED_PROTOBUF_FILES})
 add_executable(echo_server_async echo_server_async.cc ${GENERATED_PROTOBUF_FILES})
