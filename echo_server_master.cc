@@ -381,6 +381,7 @@ void wait(std::initializer_list<int> sigs)
 
 
 int main(int argc, char** argv)
+try
 {
 	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 
@@ -395,4 +396,9 @@ int main(int argc, char** argv)
 	gpr_log(GPR_INFO, "stop Server");
 
 	return 0;
+}
+catch (const std::exception& ex)
+{
+	gpr_log(GPR_ERROR, "main: %s", ex.what());
+	return 1;
 }

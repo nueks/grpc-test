@@ -224,14 +224,17 @@ private:
 	{
 		if (!ok)
 		{
-			//std::cout << "---------------" << std::endl;
+			gpr_log(GPR_DEBUG, "onRead: no ok");
 			delete static_cast<ImplType*>(this);
 			return;
 		}
 
 		static_cast<ImplType&>(*this).clone();
 
+		// 아래 코드가 이번 구현의 핵심이다.
+		// 직접 job 을 실행하는 것이아니고 ThreadPool에 위임한다.
 		ThreadPool::instance().push(&job_);
+
 		//static_cast<ImplType&>(*this).process();
 		//responder_.Finish(response_, Status::OK, &on_finish_);
 	}
@@ -239,7 +242,8 @@ private:
 	void onFinish(bool ok)
 	{
 		if (!ok)
-			std::cout << "===================" << std::endl;
+			gpr_log(GPR_DEBUG, "onFinish: no ok (no error)");
+
 		delete static_cast<ImplType*>(this);
 	}
 };
@@ -262,7 +266,6 @@ public:
 	{
 		//usleep(1000);
 		response_.set_message(request_.message() + tag_);
-		//usleep(3000);
 	}
 
 	EchoRpc* clone()
@@ -285,9 +288,12 @@ private:
 public:
 	~ServerImpl()
 	{
-		std::cout << "dtor of ServerImpl" << std::endl;
+		gpr_log(GPR_INFO, "destructor of ServerImpl");
 
+		gpr_log(GPR_INFO, "shutdown Server");
 		server_->Shutdown();
+
+		gpr_log(GPR_INFO, "shutdown ServerCompletionQueue");
 		cq_->Shutdown();
 
 		std::for_each(begin(threads_), end(threads_), [](std::thread& t){ t.join(); });
@@ -304,14 +310,12 @@ public:
 		builder.RegisterService(&service_);
 		cq_ = builder.AddCompletionQueue();
 		server_ = builder.BuildAndStart();
-		std::cout << "Server listening on: " << server_address << std::endl;
+		gpr_log(GPR_INFO, "Server listening on: %s", server_address.c_str());
 
 		init();
 
-		for (auto i = 0; i < 1; ++i)
-		{
-			threads_.emplace_back(&ServerImpl::HandleRpcs, this);
-		}
+		// IO thread는 하나만!
+		threads_.emplace_back(&ServerImpl::HandleRpcs, this);
 	}
 
 	void init()
@@ -333,37 +337,49 @@ public:
 			}
 			else if (ret == CompletionQueue::NextStatus::SHUTDOWN)
 			{
-				std::cout << "cq shutdown" << std::endl;
+				gpr_log(GPR_DEBUG, "ServerCompletionQueue shutdowned");
 				break;
 			}
 		}
 
-		std::cout << "end of HandleRpcs" << std::endl;
+		gpr_log(GPR_INFO, "end of HandleRpcs");
 	}
 };
 
 
+void wait(std::initializer_list<int> sigs)
+{
+	sigset_t set;
+	int signum;
+	sigemptyset(&set);
+	for (auto sig : sigs)
+	{
+		sigaddset(&set, sig);
+	}
+	pthread_sigmask(SIG_BLOCK, &set, NULL);
+	sigwait(&set, &signum);
+}
+
+
 int main(int argc, char** argv)
+try
 {
 	gpr_set_log_verbosity(GPR_LOG_SEVERITY_DEBUG);
 
 	ThreadPool::instance().init(16);
+
 	ServerImpl server;
 	server.run();
 
-	std::cout << "set signal" << std::endl;
-	sigset_t set;
-	int signum;
-	sigemptyset(&set);
-	sigaddset(&set, SIGQUIT);
-	sigaddset(&set, SIGTERM);
-	sigaddset(&set, SIGINT);
-	pthread_sigmask(SIG_BLOCK, &set, NULL);
-	sigwait(&set, &signum);
+	gpr_log(GPR_INFO, "Server started");
+	wait({SIGQUIT, SIGTERM, SIGINT});
+	gpr_log(GPR_INFO, "stop Server");
 
-	std::cout << "stop server" << std::endl;
 	ThreadPool::instance().stop();
-
-
 	return 0;
+}
+catch (const std::exception& ex)
+{
+	gpr_log(GPR_ERROR, "main: %s", ex.what());
+	return 1;
 }
