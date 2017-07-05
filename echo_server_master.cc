@@ -48,9 +48,7 @@ public:
 	}
 
 private:
-	StubPool()
-	{
-	}
+	StubPool() = default;
 };
 
 
@@ -255,8 +253,11 @@ private:
 	Echo::AsyncService service_;
 	std::unique_ptr<Server> server_;
 
-	std::unique_ptr<ServerCompletionQueue> cq_;
-	std::unique_ptr<CompletionQueue> ccq_{new CompletionQueue};
+	//std::unique_ptr<ServerCompletionQueue> cq_;
+	std::vector<std::unique_ptr<ServerCompletionQueue> > cqs_;
+	std::vector<std::unique_ptr<CompletionQueue> > ccqs_;
+
+	//std::unique_ptr<CompletionQueue> ccq_{new CompletionQueue};
 
 	std::vector<std::thread> threads_;
 
@@ -267,10 +268,18 @@ public:
 		server_->Shutdown();
 
 		gpr_log(GPR_INFO, "shutdown ServerCompletionQueue");
-		cq_->Shutdown();
+		//cq_->Shutdown();
+		std::for_each(
+			begin(cqs_), end(cqs_),
+			[](auto& cq){ cq->Shutdown(); }
+		);
 
 		gpr_log(GPR_INFO, "shutdown Client CompletionQueue");
-		ccq_->Shutdown();
+		//ccq_->Shutdown();
+		std::for_each(
+			begin(ccqs_), end(ccqs_),
+			[](auto& ccq){ ccq->Shutdown(); }
+		);
 
 		std::for_each(begin(threads_), end(threads_), [](std::thread& t){ t.join(); });
 		threads_.clear();
@@ -284,38 +293,61 @@ public:
 		ServerBuilder builder;
 		builder.AddListeningPort(server_address, grpc::InsecureServerCredentials());
 		builder.RegisterService(&service_);
-		cq_ = builder.AddCompletionQueue();
+		//cq_ = builder.AddCompletionQueue();
+
+		int num_cq = 4;
+		for (auto i = 0; i < num_cq; ++i)
+		{
+			cqs_.push_back(builder.AddCompletionQueue());
+		}
+
+
 		server_ = builder.BuildAndStart();
 
 		gpr_log(GPR_INFO, "Server listening on: %s", server_address.c_str());
 
-		init();
+		//std::unique_ptr<CompletionQueue> ccq_{new CompletionQueue};
+
+		int num_ccq = 4;
+		for (auto i = 0; i < num_ccq; ++i)
+		{
+			ccqs_.push_back(std::make_unique<CompletionQueue>());
+		}
+
+		init(num_cq);
 
 		// 클라이언트의 연결을 담당하는 thread (server thread)는 네트웍 I/O만을 담당한다.
 		// 이경우 thread를 늘리면 오히려 성능이 저하된다.
 		// 성능을 끌어내기 위해서는 ServerCompletionQueue를 thread 당 하나씩 할당해야 한다.
-		for (auto i = 0; i < 1; ++i)
+		for (auto i = 0; i < num_cq; ++i)
 		{
-			threads_.emplace_back(&ServerImpl::HandleRpcs, this);
+			threads_.emplace_back(&ServerImpl::HandleRpcs, this, i);
 		}
 
 		// 하단 서버(slave) 와의 연결을 담당하는 thread는 sort/merge 등을 처리해야 한다.
 		// I/O 작업만 수행하는 ServerCompletionQueue와 달리 thread 갯수를 늘릴 수 있다.
 		// 단, sort/merge 작업의 부하가 작으면 thread 갯수가 작을 수록 유리하다.
 		// 성능을 끌어내기 위해서는 CompletionQueue를 thread 당 하나씩 할당해야 한다.
-		for (auto i = 0; i< 4; ++i)
+		for (auto i = 0; i < num_ccq; ++i)
 		{
-			threads_.emplace_back(&ServerImpl::HandleClients, this);
+			threads_.emplace_back(&ServerImpl::HandleClients, this, i);
 		}
 	}
 
-	void init()
+	void init(int index)
 	{
-		new EchoRpc(&service_, cq_.get(), ccq_.get(), "test");
+		//new EchoRpc(&service_, cq_.get(), ccq_.get(), "test");
+
+		for (auto i = 0; i < index; ++i)
+		{
+			new EchoRpc(&service_, cqs_[i].get(), ccqs_[i].get(), "test");
+		}
 	}
 
-	void HandleRpcs()
+	void HandleRpcs(int index)
 	{
+		gpr_log(GPR_INFO, "start of HandleRpcs. index:%d", index);
+		pthread_setname_np(pthread_self(), "HandleRpcs");
 		// 종료 signal을 worker thread가 받으면 안된다.
 		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
 		std::function<void(bool)>* tag;
@@ -323,7 +355,7 @@ public:
 
 		while (true)
 		{
-			auto ret = cq_->Next((void**)&tag, &ok);
+			auto ret = cqs_[index]->Next((void**)&tag, &ok);
 			if (ret == CompletionQueue::NextStatus::GOT_EVENT)
 			{
 				(*tag)(ok);
@@ -339,8 +371,10 @@ public:
 		gpr_log(GPR_INFO, "end of HandleRpcs");
 	}
 
-	void HandleClients()
+	void HandleClients(int index)
 	{
+		gpr_log(GPR_INFO, "start of HandleClients. index:%d", index);
+		pthread_setname_np(pthread_self(), "HandleClients");
 		// 종료 signal을 worker thread가 받으면 안된다.
 		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
 		std::function<void(bool)>* tag;
@@ -348,7 +382,7 @@ public:
 
 		while (true)
 		{
-			auto ret = ccq_->Next((void**)&tag, &ok);
+			auto ret = ccqs_[index]->Next((void**)&tag, &ok);
 			if (ret == CompletionQueue::NextStatus::GOT_EVENT)
 			{
 				//gpr_log(GPR_DEBUG, "got client event with ok=%d", ok);

@@ -203,8 +203,8 @@ public:
 
 		for (auto i = 0; i < num_cq; ++i)
 		{
-			threads_.emplace_back([this, i](){ this->HandleRpcs(i); });
-			threads_.emplace_back([this, i](){ this->HandleRpcs(i); });
+			threads_.emplace_back([this, i](){ this->HandleRpcs(i, 0); });
+			threads_.emplace_back([this, i](){ this->HandleRpcs(i, 1); });
 		}
 	}
 
@@ -216,7 +216,7 @@ public:
 		}
 	}
 
-	void HandleRpcs(int index)
+	void HandleRpcs(int index, int tid)
 	{
 		// 종료 signal을 worker thread가 받으면 안된다.
 		SignalBlocker({SIGQUIT, SIGTERM, SIGINT});
@@ -224,7 +224,7 @@ public:
 		std::function<void(bool)>* tag;
 		bool ok;
 
-		gpr_log(GPR_INFO, "HandleRpcs (thread:%d)", index);
+		gpr_log(GPR_INFO, "HandleRpcs (thread:%d-%d)", index, tid);
 		while (true)
 		{
 			auto ret = cqs_[index]->Next((void**)&tag, &ok);
@@ -243,7 +243,7 @@ public:
 			}
 		}
 
-		gpr_log(GPR_INFO, "End of HandleRpcs (thread:%d)", index);
+		gpr_log(GPR_INFO, "End of HandleRpcs (thread:%d-%d)", index, tid);
 	}
 };
 
