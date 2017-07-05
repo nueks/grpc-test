@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.3)
 project(grpc_echo)
 
 find_package(Protobuf REQUIRED)
-
+#message(status, ${PROTOBUF_LIBRARY})
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14 -g")
 
@@ -42,11 +42,12 @@ set(GENERATED_PROTOBUF_FILES ${ECHO_PB_H_FILE} ${ECHO_PB_CPP_FILE}
     ${ECHO_GRPC_PB_H_FILE} ${ECHO_GRPC_PB_CPP_FILE})
 
 include_directories(${GENERATED_PROTOBUF_PATH})
-link_libraries(pthread grpc++_unsecure grpc gpr ${PROTOBUF_LIBRARY} gflags)
+link_libraries(pthread grpc++_unsecure grpc gpr ${PROTOBUF_LIBRARY} libgflags.a)
 
 add_executable(echo_server echo_server.cc ${GENERATED_PROTOBUF_FILES})
 add_executable(echo_server_async echo_server_async.cc ${GENERATED_PROTOBUF_FILES})
 add_executable(echo_server_async2 echo_server_async2.cc ${GENERATED_PROTOBUF_FILES})
 add_executable(echo_server_master echo_server_master.cc ${GENERATED_PROTOBUF_FILES})
+add_executable(echo_server_master2 echo_server_master2.cc ${GENERATED_PROTOBUF_FILES})
 add_executable(echo_client echo_client.cc ${GENERATED_PROTOBUF_FILES})
 add_executable(echo_client_async echo_client_async.cc ${GENERATED_PROTOBUF_FILES})
